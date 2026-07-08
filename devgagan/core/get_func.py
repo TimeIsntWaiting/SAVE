@@ -618,8 +618,8 @@ class SmartTelegramBot:
             msg_link = msg_link.split("?single")[0]
             protected_channels = self.db.get_protected_channels()
             
-            # Extract chat and message info
-            chat_id, msg_id = await self._parse_message_link(msg_link, offset, protected_channels, sender, edit_id)
+            # Extract chat and message info - (Yahan userbot pass kiya gaya hai)
+            chat_id, msg_id = await self._parse_message_link(userbot, msg_link, offset, protected_channels, sender, edit_id)
             if not chat_id:
                 return
             
@@ -699,7 +699,53 @@ class SmartTelegramBot:
             # Cleanup
             if file_path:
                 await self.file_ops._cleanup_file(file_path)
+            import gc
             gc.collect()
+
+    async def _parse_message_link(self, userbot, msg_link: str, offset: int, protected_channels: Set[int], sender: int, edit_id: int) -> Tuple[Optional[int], Optional[int]]:
+        """Parse different types of message links (Updated for Topics & Query strings)"""
+        
+        # Sabase zaroori step: URL se extra query parameters (?single) aur aakhiri slash hatana
+        msg_link = msg_link.split("?")[0].rstrip("/")
+        
+        if 't.me/c/' in msg_link or 't.me/b/' in msg_link:
+            parts = msg_link.split("/")
+            if 't.me/b/' in msg_link:
+                chat_id = parts[parts.index('b') + 1]
+                msg_id = int(parts[-1]) + offset
+            else:
+                chat_id = int('-100' + parts[parts.index('c') + 1])
+                msg_id = int(parts[-1]) + offset
+            
+            if chat_id in protected_channels:
+                await app.edit_message_text(sender, edit_id, "❌ This channel is protected by **Team SPY**.")
+                return None, None
+                
+            return chat_id, msg_id
+        
+        elif '/s/' in msg_link:
+            # Handle story links
+            await app.edit_message_text(sender, edit_id, "📖 Story Link Detected...")
+            if not gf:
+                await app.edit_message_text(sender, edit_id, "❌ Login required to save stories...")
+                return None, None
+            
+            parts = msg_link.split("/")
+            chat = f"-100{parts[3]}" if parts[3].isdigit() else parts[3]
+            msg_id = int(parts[-1])
+            await self._download_user_stories(gf, chat, msg_id, sender, edit_id)
+            return None, None
+        
+        else:
+            # Handle public links (Normal & Topics)
+            await app.edit_message_text(sender, edit_id, "🔗 Public link detected...")
+            parts = msg_link.split("/")
+            chat = msg_link.split("t.me/")[1].split("/")[0]
+            msg_id = int(parts[-1])
+            
+            # YAHAN MAIN FIX HAI: `gf` ki jagah asli `userbot` pass kar rahe hain
+            await self._copy_public_message(app, userbot, sender, chat, msg_id, edit_id)
+            return None, None
 
     async def _parse_message_link(self, msg_link: str, offset: int, protected_channels: Set[int], sender: int, edit_id: int) -> Tuple[Optional[int], Optional[int]]:
         """Parse different types of message links (Updated for Topics & Query strings)"""
