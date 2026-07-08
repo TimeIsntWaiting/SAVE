@@ -702,13 +702,18 @@ class SmartTelegramBot:
             gc.collect()
 
     async def _parse_message_link(self, msg_link: str, offset: int, protected_channels: Set[int], sender: int, edit_id: int) -> Tuple[Optional[int], Optional[int]]:
-        """Parse different types of message links"""
+        """Parse different types of message links (Updated for Topics & Query strings)"""
+        
+        # Sabase zaroori step: URL se extra query parameters (?single) aur aakhiri slash hatana
+        msg_link = msg_link.split("?")[0].rstrip("/")
+        
         if 't.me/c/' in msg_link or 't.me/b/' in msg_link:
             parts = msg_link.split("/")
             if 't.me/b/' in msg_link:
-                chat_id = parts[-2]
+                chat_id = parts[parts.index('b') + 1]
                 msg_id = int(parts[-1]) + offset
             else:
+                # Private Group aur Topic links ke liye (t.me/c/chat_id/topic_id/msg_id)
                 chat_id = int('-100' + parts[parts.index('c') + 1])
                 msg_id = int(parts[-1]) + offset
             
@@ -732,10 +737,11 @@ class SmartTelegramBot:
             return None, None
         
         else:
-            # Handle public links
+            # Handle public links (Normal & Topics)
             await app.edit_message_text(sender, edit_id, "🔗 Public link detected...")
+            parts = msg_link.split("/")
             chat = msg_link.split("t.me/")[1].split("/")[0]
-            msg_id = int(msg_link.split("/")[-1])
+            msg_id = int(parts[-1])
             await self._copy_public_message(app, gf, sender, chat, msg_id, edit_id)
             return None, None
 
