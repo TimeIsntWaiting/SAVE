@@ -271,6 +271,13 @@ class FileOperations:
         name = path.stem
         extension = path.suffix.lstrip('.')
         
+        # 🔥 FIX: User ID ya Prefix hataane ka logic yahan sahi jagah par hai
+        if name.startswith(f"{user_id}_"):
+            name = name.replace(f"{user_id}_", "", 1)
+        
+        import re
+        name = re.sub(r'^\d+_', '', name)
+        
         # Process filename
         for word in delete_words:
             name = name.replace(word, "")
@@ -325,7 +332,7 @@ class FileOperations:
                             caption=part_caption,
                             reply_to_message_id=topic_id,
                             progress=progress_bar,
-                            progress_args=("╭──────────────╮\n│ **__Shukla Uploader__**\n├────────", edit_msg, time.time())
+                            progress_args=("╭──────────────╮\n│ **__Pyro Uploader__**\n├────────", edit_msg, time.time())
                         )
                         await result.copy(LOG_GROUP)
                         await edit_msg.delete()
@@ -366,40 +373,37 @@ class SmartTelegramBot:
         thumb_path = f'{user_id}.jpg'
         return thumb_path if os.path.exists(thumb_path) else None
     
-    async def process_filename(self, file_path: str, user_id: int) -> str:
-        """Process filename with user preferences"""
+    # 🔥 FIX: Yeh function waapas apni sahi jagah par aa gaya hai
+    def parse_target_chat(self, target: str) -> Tuple[int, Optional[int]]:
+        """Parse chat ID and topic ID from target string"""
+        if '/' in target:
+            parts = target.split('/')
+            return int(parts[0]), int(parts[1])
+        return int(target), None
+    
+    async def process_user_caption(self, original_caption: str, user_id: int) -> str:
+        """Process caption with user preferences"""
+        custom_caption = self.user_caption_prefs.get(str(user_id), "") or self.db.get_user_data(user_id, "custom_caption", "")
         delete_words = set(self.db.get_user_data(user_id, "delete_words", []))
         replacements = self.db.get_user_data(user_id, "replacement_words", {})
-        rename_tag = self.db.get_user_data(user_id, "rename_tag", "Team SPY")
         
-        path = Path(file_path)
-        name = path.stem
-        extension = path.suffix.lstrip('.')
+        # Process original caption
+        processed = original_caption or ""
         
-        # User ID ya koi bhi prefix number hatane ka logic
-        if name.startswith(f"{user_id}_"):
-            name = name.replace(f"{user_id}_", "", 1)
-        
-        import re
-        name = re.sub(r'^\d+_', '', name)
-        
-        # Process filename
+        # Remove delete words
         for word in delete_words:
-            name = name.replace(word, "")
+            processed = processed.replace(word, "")
         
+        # Apply replacements
         for word, replacement in replacements.items():
-            name = name.replace(word, replacement)
+            processed = processed.replace(word, replacement)
         
-        # Normalize extension for videos
-        if extension.lower() in self.config.VIDEO_EXTS and extension.lower() not in ['mp4']:
-            extension = 'mp4'
+        # Add custom caption
+        if custom_caption:
+            processed = f"{processed}\n\n{custom_caption}".strip()
         
-        new_name = f"{name.strip()} {rename_tag}.{extension}"
-        new_path = path.parent / new_name
-        
-        await asyncio.to_thread(os.rename, file_path, new_path)
-        return str(new_path)
-        
+        return processed if processed else None
+
     async def upload_with_pyrogram(self, file_path: str, user_id: int, target_chat_id: int, caption: str, topic_id: Optional[int] = None, edit_msg=None):
         """Upload using Pyrogram with proper file type detection"""
         file_type = self.media_processor.get_file_type(file_path)
@@ -740,7 +744,7 @@ class SmartTelegramBot:
             return None, None
         
         else:
-            # Handle public links
+            # Handle public links (Normal & Topics)
             await app.edit_message_text(sender, edit_id, "🔗 Public link detected...")
             parts = msg_link.split("/")
             chat = msg_link.split("t.me/")[1].split("/")[0]
