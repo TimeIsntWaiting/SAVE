@@ -325,7 +325,7 @@ class FileOperations:
                             caption=part_caption,
                             reply_to_message_id=topic_id,
                             progress=progress_bar,
-                            progress_args=("╭──────────────╮\n│ **__Pyro Uploader__**\n├────────", edit_msg, time.time())
+                            progress_args=("╭──────────────╮\n│ **__Shukla Uploader__**\n├────────", edit_msg, time.time())
                         )
                         await result.copy(LOG_GROUP)
                         await edit_msg.delete()
@@ -366,13 +366,7 @@ class SmartTelegramBot:
         thumb_path = f'{user_id}.jpg'
         return thumb_path if os.path.exists(thumb_path) else None
     
-    def parse_target_chat(self, target: str) -> Tuple[int, Optional[int]]:
-        """Parse chat ID and topic ID from target string"""
-        if '/' in target:
-            parts = target.split('/')
-            return int(parts[0]), int(parts[1])
-        return int(target), None
-        async def process_filename(self, file_path: str, user_id: int) -> str:
+    async def process_filename(self, file_path: str, user_id: int) -> str:
         """Process filename with user preferences"""
         delete_words = set(self.db.get_user_data(user_id, "delete_words", []))
         replacements = self.db.get_user_data(user_id, "replacement_words", {})
@@ -382,11 +376,10 @@ class SmartTelegramBot:
         name = path.stem
         extension = path.suffix.lstrip('.')
         
-        # 🔥 YAHAN FIX HAI: Tumhara User ID (Admin ID) ya koi bhi number jo file ke aage automatically jud gaya ho, use completely hata dena
+        # User ID ya koi bhi prefix number hatane ka logic
         if name.startswith(f"{user_id}_"):
             name = name.replace(f"{user_id}_", "", 1)
         
-        # Ek aur layer of safety (kabhi kabhi Telegram message ID bhi aage jod deta hai)
         import re
         name = re.sub(r'^\d+_', '', name)
         
@@ -406,8 +399,7 @@ class SmartTelegramBot:
         
         await asyncio.to_thread(os.rename, file_path, new_path)
         return str(new_path)
-
-
+        
     async def upload_with_pyrogram(self, file_path: str, user_id: int, target_chat_id: int, caption: str, topic_id: Optional[int] = None, edit_msg=None):
         """Upload using Pyrogram with proper file type detection"""
         file_type = self.media_processor.get_file_type(file_path)
