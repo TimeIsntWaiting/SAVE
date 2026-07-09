@@ -372,29 +372,41 @@ class SmartTelegramBot:
             parts = target.split('/')
             return int(parts[0]), int(parts[1])
         return int(target), None
-    
-    async def process_user_caption(self, original_caption: str, user_id: int) -> str:
-        """Process caption with user preferences"""
-        custom_caption = self.user_caption_prefs.get(str(user_id), "") or self.db.get_user_data(user_id, "custom_caption", "")
+        async def process_filename(self, file_path: str, user_id: int) -> str:
+        """Process filename with user preferences"""
         delete_words = set(self.db.get_user_data(user_id, "delete_words", []))
         replacements = self.db.get_user_data(user_id, "replacement_words", {})
+        rename_tag = self.db.get_user_data(user_id, "rename_tag", "Team SPY")
         
-        # Process original caption
-        processed = original_caption or ""
+        path = Path(file_path)
+        name = path.stem
+        extension = path.suffix.lstrip('.')
         
-        # Remove delete words
+        # 🔥 YAHAN FIX HAI: Tumhara User ID (Admin ID) ya koi bhi number jo file ke aage automatically jud gaya ho, use completely hata dena
+        if name.startswith(f"{user_id}_"):
+            name = name.replace(f"{user_id}_", "", 1)
+        
+        # Ek aur layer of safety (kabhi kabhi Telegram message ID bhi aage jod deta hai)
+        import re
+        name = re.sub(r'^\d+_', '', name)
+        
+        # Process filename
         for word in delete_words:
-            processed = processed.replace(word, "")
+            name = name.replace(word, "")
         
-        # Apply replacements
         for word, replacement in replacements.items():
-            processed = processed.replace(word, replacement)
+            name = name.replace(word, replacement)
         
-        # Add custom caption
-        if custom_caption:
-            processed = f"{processed}\n\n{custom_caption}".strip()
+        # Normalize extension for videos
+        if extension.lower() in self.config.VIDEO_EXTS and extension.lower() not in ['mp4']:
+            extension = 'mp4'
         
-        return processed if processed else None
+        new_name = f"{name.strip()} {rename_tag}.{extension}"
+        new_path = path.parent / new_name
+        
+        await asyncio.to_thread(os.rename, file_path, new_path)
+        return str(new_path)
+
 
     async def upload_with_pyrogram(self, file_path: str, user_id: int, target_chat_id: int, caption: str, topic_id: Optional[int] = None, edit_msg=None):
         """Upload using Pyrogram with proper file type detection"""
