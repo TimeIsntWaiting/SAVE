@@ -130,7 +130,8 @@ class DatabaseManager:
                 {"$unset": {
                     "delete_words": "", "replacement_words": "", 
                     "watermark_text": "", "duration_limit": "",
-                    "custom_caption": "", "rename_tag": ""
+                    "custom_caption": "", "rename_tag": "",
+                    "forward_text": ""
                 }}
             )
             self.clear_user_cache(user_id)
@@ -271,7 +272,7 @@ class FileOperations:
         name = path.stem
         extension = path.suffix.lstrip('.')
         
-        # 🔥 FIX: User ID ya Prefix hataane ka logic yahan sahi jagah par hai
+        # FIX: User ID ya Prefix hataane ka logic
         if name.startswith(f"{user_id}_"):
             name = name.replace(f"{user_id}_", "", 1)
         
@@ -373,7 +374,6 @@ class SmartTelegramBot:
         thumb_path = f'{user_id}.jpg'
         return thumb_path if os.path.exists(thumb_path) else None
     
-    # 🔥 FIX: Yeh function waapas apni sahi jagah par aa gaya hai
     def parse_target_chat(self, target: str) -> Tuple[int, Optional[int]]:
         """Parse chat ID and topic ID from target string"""
         if '/' in target:
@@ -641,7 +641,7 @@ class SmartTelegramBot:
                 await app.delete_messages(sender, edit_id)
                 return
             
-            # Handle special message types
+            # Handle special message types (ab yahan text filter logic check hoga)
             if await self._handle_special_messages(msg, target_chat_id, topic_id, edit_id, sender):
                 return
                 
@@ -711,8 +711,6 @@ class SmartTelegramBot:
 
     async def _parse_message_link(self, userbot, msg_link: str, offset: int, protected_channels: Set[int], sender: int, edit_id: int) -> Tuple[Optional[int], Optional[int]]:
         """Parse different types of message links"""
-        
-        # Sabase zaroori step: URL se extra query parameters (?single) aur aakhiri slash hatana
         msg_link = msg_link.split("?")[0].rstrip("/")
         
         if 't.me/c/' in msg_link or 't.me/b/' in msg_link:
@@ -731,7 +729,6 @@ class SmartTelegramBot:
             return chat_id, msg_id
         
         elif '/s/' in msg_link:
-            # Handle story links
             await app.edit_message_text(sender, edit_id, "📖 Story Link Detected...")
             if not gf:
                 await app.edit_message_text(sender, edit_id, "❌ Login required to save stories...")
@@ -744,7 +741,6 @@ class SmartTelegramBot:
             return None, None
         
         else:
-            # Handle public links (Normal & Topics)
             await app.edit_message_text(sender, edit_id, "🔗 Public link detected...")
             parts = msg_link.split("/")
             chat = msg_link.split("t.me/")[1].split("/")[0]
@@ -754,13 +750,25 @@ class SmartTelegramBot:
 
     async def _handle_special_messages(self, msg, target_chat_id: int, topic_id: Optional[int], edit_id: int, sender: int) -> bool:
         """Handle special message types that don't require downloading"""
+        forward_text = self.db.get_user_data(sender, "forward_text", True)
+        
         if msg.media == MessageMediaType.WEB_PAGE_PREVIEW:
+            if not forward_text:
+                await app.edit_message_text(sender, edit_id, "⏭️ Text message skipped (Disabled in settings).")
+                await asyncio.sleep(2)
+                await app.delete_messages(sender, edit_id)
+                return True
             result = await app.send_message(target_chat_id, msg.text.markdown, reply_to_message_id=topic_id)
             await result.copy(LOG_GROUP)
             await app.delete_messages(sender, edit_id)
             return True
         
         if msg.text:
+            if not forward_text:
+                await app.edit_message_text(sender, edit_id, "⏭️ Text message skipped (Disabled in settings).")
+                await asyncio.sleep(2)
+                await app.delete_messages(sender, edit_id)
+                return True
             result = await app.send_message(target_chat_id, msg.text.markdown, reply_to_message_id=topic_id)
             await result.copy(LOG_GROUP)
             await app.delete_messages(sender, edit_id)
@@ -822,6 +830,7 @@ class SmartTelegramBot:
         """Handle copying from public channels/groups"""
         target_chat_str = self.user_chat_ids.get(sender, str(sender))
         target_chat_id, topic_id = self.parse_target_chat(target_chat_str)
+        forward_text = self.db.get_user_data(sender, "forward_text", True)
         file_path = None
         
         try:
@@ -831,7 +840,6 @@ class SmartTelegramBot:
             final_caption = await self._format_caption_with_custom(msg.caption or '', sender, custom_caption)
 
             if msg.media and not msg.document and not msg.video:
-                # For photos and other simple media
                 if msg.photo:
                     result = await app_client.send_photo(target_chat_id, msg.photo.file_id, caption=final_caption, reply_to_message_id=topic_id)
                 elif msg.video:
@@ -845,6 +853,12 @@ class SmartTelegramBot:
                     return
 
             elif msg.text:
+                if not forward_text:
+                    await app_client.edit_message_text(sender, edit_id, "⏭️ Text message skipped.")
+                    await asyncio.sleep(2)
+                    await app_client.delete_messages(sender, edit_id)
+                    return
+                
                 result = await app_client.copy_message(target_chat_id, chat_id, message_id, reply_to_message_id=topic_id)
                 await result.copy(LOG_GROUP)
                 await app.delete_messages(sender, edit_id)
@@ -858,14 +872,21 @@ class SmartTelegramBot:
                 except:
                     pass
                 
-                chat_id = (await userbot.get_chat(f"@{chat_id}")).id
-                msg = await userbot.get_messages(chat_id, message_id)
+                chat_info = await userbot.get_chat(f"@{chat_id}")
+                real_chat_id = chat_info.id
+                msg = await userbot.get_messages(real_chat_id, message_id)
 
                 if not msg or msg.service or msg.empty:
                     await edit_msg.edit("❌ Message not found or inaccessible")
                     return
 
                 if msg.text:
+                    if not forward_text:
+                        await edit_msg.edit("⏭️ Text message skipped.")
+                        await asyncio.sleep(2)
+                        await edit_msg.delete()
+                        return
+                        
                     await app_client.send_message(target_chat_id, msg.text.markdown, reply_to_message_id=topic_id)
                     await edit_msg.delete()
                     return
@@ -922,16 +943,19 @@ class SmartTelegramBot:
             return f"{processed}\n\n__**{custom_caption}**__" if processed else f"__**{custom_caption}**__"
         return processed
 
-    async def send_settings_panel(self, chat_id: int, user_id: int):
+    async def send_settings_panel(self, chat_id: int, user_id: int, edit_msg=None):
         """Send enhanced settings panel"""
+        forward_text = self.db.get_user_data(user_id, "forward_text", True)
+        text_status = "✅ ON" if forward_text else "❌ OFF"
+        
         buttons = [
             [Button.inline("Set Chat ID", b'setchat'), Button.inline("Set Rename Tag", b'setrename')],
             [Button.inline("Caption", b'setcaption'), Button.inline("Replace Words", b'setreplacement')],
             [Button.inline("Remove Words", b'delete'), Button.inline("Reset All", b'reset')],
             [Button.inline("Session Login", b'addsession'), Button.inline("Logout", b'logout')],
             [Button.inline("Set Thumbnail", b'setthumb'), Button.inline("Remove Thumbnail", b'remthumb')],
+            [Button.inline(f"Forward Text: {text_status}", b'toggle_text'), Button.inline("Upload Method", b'uploadmethod')],
             [Button.inline("PDF Watermark", b'pdfwt'), Button.inline("Video Watermark", b'watermark')],
-            [Button.inline("Upload Method", b'uploadmethod')],
             [Button.url("Report Issues", "https://t.me/team_spy_pro")]
         ]
         
@@ -941,11 +965,15 @@ class SmartTelegramBot:
             "• Configure upload methods\n"
             "• Set custom captions and rename tags\n"
             "• Manage word filters and replacements\n"
-            "• Handle thumbnails and watermarks\n\n"
+            "• Handle thumbnails and watermarks\n"
+            "• Toggle text message forwarding\n\n"
             "Select an option to get started!"
         )
         
-        await gf.send_file(chat_id, file=self.config.SETTINGS_PIC, caption=message, buttons=buttons)
+        if edit_msg:
+            await edit_msg.edit(message, buttons=buttons)
+        else:
+            await gf.send_file(chat_id, file=self.config.SETTINGS_PIC, caption=message, buttons=buttons)
 
 # Initialize the main bot instance
 telegram_bot = SmartTelegramBot()
@@ -962,8 +990,14 @@ async def callback_query_handler(event):
     user_id = event.sender_id
     data = event.data
     
+    # Toggle text forwarding
+    if data == b'toggle_text':
+        current_status = telegram_bot.db.get_user_data(user_id, "forward_text", True)
+        telegram_bot.db.save_user_data(user_id, "forward_text", not current_status)
+        await telegram_bot.send_settings_panel(event.chat_id, user_id, edit_msg=event)
+
     # Upload method selection
-    if data == b'uploadmethod':
+    elif data == b'uploadmethod':
         current_method = telegram_bot.db.get_user_data(user_id, "upload_method", "Pyrogram")
         pyro_check = " ✅" if current_method == "Pyrogram" else ""
         tele_check = " ✅" if current_method == "Telethon" else ""
