@@ -28,7 +28,8 @@ import pymongo
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton, Message
 from pyrogram.errors import ChannelBanned, ChannelInvalid, ChannelPrivate, ChatIdInvalid, ChatInvalid, RPCError
 from pyrogram.enums import MessageMediaType, ParseMode
-from telethon.tl.types import DocumentAttributeVideo
+# 🔥 FIX 1: Added DocumentAttributeFilename
+from telethon.tl.types import DocumentAttributeVideo, DocumentAttributeFilename
 from telethon import events, Button
 from devgagan import app, sex as gf
 from devgagan.core.func import *
@@ -272,7 +273,6 @@ class FileOperations:
         name = path.stem
         extension = path.suffix.lstrip('.')
         
-        # FIX: User ID ya Prefix hataane ka logic
         if name.startswith(f"{user_id}_"):
             name = name.replace(f"{user_id}_", "", 1)
         
@@ -512,8 +512,10 @@ class SmartTelegramBot:
             await progress_message.delete()
             
             # Prepare attributes based on file type
-            attributes = []
             file_type = self.media_processor.get_file_type(file_path)
+            
+            # 🔥 FIX 1: Explicitly tell Telethon to use our cleanly processed filename
+            attributes = [DocumentAttributeFilename(file_name=os.path.basename(file_path))]
             
             if file_type == 'video':
                 if 'video_metadata' in globals():
@@ -521,11 +523,17 @@ class SmartTelegramBot:
                     duration = metadata.get('duration', 0)
                     width = metadata.get('width', 0)
                     height = metadata.get('height', 0)
-                    attributes = [DocumentAttributeVideo(
+                    attributes.append(DocumentAttributeVideo(
                         duration=duration, w=width, h=height, supports_streaming=True
-                    )]
+                    ))
             
             thumb_path = self.get_thumbnail_path(user_id)
+            
+            # 🔥 FIX 2: Convert LOG_GROUP ID securely for Telethon (No more Phone Number error)
+            try:
+                log_chat_id = int(LOG_GROUP)
+            except (ValueError, TypeError):
+                log_chat_id = LOG_GROUP
             
             # Send to target chat
             await gf.send_file(
@@ -538,9 +546,9 @@ class SmartTelegramBot:
                 thumb=thumb_path
             )
             
-            # Send to log group
+            # Send to log group without crashing
             await gf.send_file(
-                LOG_GROUP,
+                log_chat_id,
                 uploaded,
                 caption=html_caption,
                 attributes=attributes,
@@ -549,6 +557,7 @@ class SmartTelegramBot:
             )
             
         except Exception as e:
+            # We use app (Pyrogram) to send error because it handles string/int easily
             await app.send_message(LOG_GROUP, f"**SpyLib Upload Failed:** {str(e)}")
             raise
 
@@ -641,7 +650,7 @@ class SmartTelegramBot:
                 await app.delete_messages(sender, edit_id)
                 return
             
-            # Handle special message types (ab yahan text filter logic check hoga)
+            # Handle special message types
             if await self._handle_special_messages(msg, target_chat_id, topic_id, edit_id, sender):
                 return
                 
