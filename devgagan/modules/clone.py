@@ -117,10 +117,10 @@ async def clone_command_handler(_, message: Message):
         source_chat = await userbot.get_chat(chat_peer)
         chat_id = source_chat.id
         chat_title = source_chat.title or "Telegram Chat"
-        chat_username = source_chat.username # Needed to generate public links correctly
+        chat_username = getattr(source_chat, "username", None)
         
-        # Check if the source is a Forum Group (Topics enabled)
-        if source_chat.is_forum:
+        # Check if the source is a Forum Group (Topics enabled) safely
+        if getattr(source_chat, "is_forum", False):
             await status_msg.edit_text("👾 **Forum Group detected! Topics fetch ho rahe hain...**")
             
             peer = await userbot.resolve_peer(chat_id)
