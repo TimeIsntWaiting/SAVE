@@ -85,4 +85,27 @@ async def remove_channel(user_id):
 async def delete_session(user_id):
     """Delete the session associated with the given user_id from the database."""
     await db.update_one({"_id": user_id}, {"$unset": {"session": ""}})
- 
+
+# ---------------------------------------------------
+# TOPIC CLONE STATE MANAGEMENT (Auto-Resume Magic)
+# ---------------------------------------------------
+
+async def set_clone_state(user_id, state_data):
+    """Save the current cloning state (for auto-resume)."""
+    data = await get_data(user_id)
+    if data and data.get("_id"):
+        await db.update_one({"_id": user_id}, {"$set": {"clone_state": state_data}})
+    else:
+        await db.insert_one({"_id": user_id, "clone_state": state_data})
+
+async def get_clone_state(user_id):
+    """Retrieve the cloning state."""
+    data = await get_data(user_id)
+    return data.get("clone_state") if data else None
+
+async def remove_clone_state(user_id):
+    """Clear the cloning state once finished or cancelled."""
+    data = await get_data(user_id)
+    if data and data.get("_id"):
+        await db.update_one({"_id": user_id}, {"$unset": {"clone_state": ""}})
+        
