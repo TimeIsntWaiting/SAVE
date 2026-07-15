@@ -63,7 +63,8 @@ async def set_interval(user_id, interval_minutes=45):
     now = datetime.now()
     interval_set[user_id] = now + timedelta(seconds=interval_minutes)
 
-@app.on_message(filters.regex(r'https?://(?:www\.)?t\.me/[^\s]+|tg://openmessage\?user_id=\w+&message_id=\d+') & filters.private)
+# 🔥 FIX 1: Added ~filters.command to prevent it from hijacking /clone or /batch commands
+@app.on_message(filters.regex(r'https?://(?:www\.)?t\.me/[^\s]+|tg://openmessage\?user_id=\w+&message_id=\d+') & filters.private & ~filters.command(["clone", "batch", "cancel"]))
 async def single_link(_, message):
     user_id = message.chat.id
     if await subscribe(_, message) == 1 or user_id in batch_mode: return
@@ -257,7 +258,6 @@ async def send_topic_menu(user_id, message_obj):
         status = "✅" if t_id in data["selected"] else "❌"
         topic_btns.append(InlineKeyboardButton(f"{status} {safe_title}", callback_data=f"tsel_{t_id}"))
     
-    # 🌟 FIX: Grouping buttons 2-3 per row to prevent Telegram UI API crash
     buttons = [topic_btns[i:i + 2] for i in range(0, len(topic_btns), 2)]
     
     buttons.append([
@@ -338,11 +338,19 @@ async def clone_command_handler(_, message):
         chat_id, chat_title = source_chat.id, source_chat.title or "Chat"
         chat_username = getattr(source_chat, "username", None)
         
-        if getattr(source_chat, "is_forum", False):
+        # 🔥 FIX 2: Smart Forum Detector (Bypasses Pyrogram is_forum Bug)
+        is_forum = getattr(source_chat, "is_forum", False)
+        url_parts = url.split("?")[0].rstrip("/").split("/")
+        
+        if "t.me/c/" in url and len(url_parts) >= 7: 
+            is_forum = True
+        elif "t.me/c/" not in url and "t.me/" in url and len(url_parts) >= 6: 
+            is_forum = True
+        
+        if is_forum:
             await status_msg.edit_text("👾 **Forum Topics fetch ho rahe hain...**")
             peer = await userbot.resolve_peer(chat_id)
             input_channel = raw.types.InputChannel(channel_id=peer.channel_id, access_hash=peer.access_hash)
-            # Limit reduced to 30 to prevent UI crash
             result = await userbot.invoke(raw.functions.channels.GetForumTopics(channel=input_channel, offset_date=0, offset_id=0, offset_topic=0, limit=30))
             
             topic_selections[user_id] = {
@@ -393,7 +401,7 @@ async def run_standard_clone(user_id, userbot, chat_id, chat_username, chat_titl
     dummy_msg = None
     try:
         pin_log = await app.send_message(user_id, f"📌 **Task Started**\nChat: `{chat_title}`")
-        dummy_msg = await app.send_message(user_id, "🔄 **Extracting Data...**") # FIX: Dedicated Dummy Message
+        dummy_msg = await app.send_message(user_id, "🔄 **Extracting Data...**")
         
         count, CHUNK = 0, 20
         for current in range(start_id, end_id + 1, CHUNK):
@@ -405,7 +413,6 @@ async def run_standard_clone(user_id, userbot, chat_id, chat_username, chat_titl
                     if not active_clones.get(user_id, False): return
                     if not msg or msg.empty or not getattr(msg, 'media', None): continue
                     
-                    # Passed valid dummy ID to prevent get_msg crash
                     await get_msg(userbot, user_id, dummy_msg.id, generate_msg_link(chat_id, chat_username, msg.id), 0, message_obj)
                     count += 1
                     await asyncio.sleep(random.uniform(1.5, 3.2)) 
@@ -417,7 +424,6 @@ async def run_standard_clone(user_id, userbot, chat_id, chat_username, chat_titl
             except Exception: pass
             
         await safe_edit(pin_log, f"✅ **Extraction finished!**")
-        # FIX: Summary sent as a permanent new message
         await app.send_message(user_id, f"✅ **Clone Complete!**\n🎉 Total `{count}` items transferred from `{chat_title}`.")
         await remove_clone_state(user_id)
     finally:
@@ -431,7 +437,7 @@ async def run_forum_clone(user_id, userbot, chat_id, chat_username, chat_title, 
     dummy_msg = None
     try:
         pin_log = await app.send_message(user_id, f"📌 **Forum Clone Started**\nTopics selected: `{len(topic_ids)}`")
-        dummy_msg = await app.send_message(user_id, "🔄 **Extracting Topics...**") # FIX: Dedicated Dummy Message
+        dummy_msg = await app.send_message(user_id, "🔄 **Extracting Topics...**")
         
         total_cloned, summary_records = 0, []
         for idx, t_id in enumerate(topic_ids, 1):
@@ -455,7 +461,6 @@ async def run_forum_clone(user_id, userbot, chat_id, chat_username, chat_title, 
                     for msg in await userbot.get_messages(chat_id, list(range(curr_id, min(curr_id + CHUNK, max_id + 1)))):
                         if not msg or msg.empty or getattr(msg, 'message_thread_id', None) != t_id or (not msg.media and not msg.text): continue
                         
-                        # Passed valid dummy ID to prevent get_msg crash
                         await get_msg(userbot, user_id, dummy_msg.id, generate_msg_link(chat_id, chat_username, msg.id), 0, message_obj)
                         topic_count += 1
                         total_cloned += 1
@@ -472,7 +477,6 @@ async def run_forum_clone(user_id, userbot, chat_id, chat_username, chat_title, 
         final_text = "✅ **Selected Topics Cloned!**\n\n" + "".join([f"• Thread `{r['topic_id']}` ➔ `{r['count']}` files\n" for r in summary_records])
         await safe_edit(pin_log, "✅ **Cloning Finished!** Check the summary below.")
         
-        # FIX: Send Permanent Summary Message
         await app.send_message(user_id, final_text + f"\n🔥 **Grand Total:** `{total_cloned}`")
         await remove_clone_state(user_id)
     finally:
