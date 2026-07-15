@@ -17,21 +17,23 @@ import time
 import random
 import string
 import asyncio
-from pyrogram import filters, Client
+from pyrogram import filters, Client, raw
 from devgagan import app, userrbot
 from config import API_ID, API_HASH, FREEMIUM_LIMIT, PREMIUM_LIMIT, OWNER_ID, DEFAULT_SESSION
 from devgagan.core.get_func import get_msg
 from devgagan.core.func import *
 from devgagan.core.mongo import db
-from pyrogram.errors import FloodWait
+from pyrogram.errors import FloodWait, MessageIdInvalid
 from datetime import datetime, timedelta
 from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 import subprocess
 from devgagan.modules.shrink import is_user_verified
+
+# For Clone functionality imports
+from devgagan.core.mongo.db import set_clone_state, get_clone_state, remove_clone_state
+
 async def generate_random_name(length=8):
     return ''.join(random.choices(string.ascii_lowercase, k=length))
-
-
 
 users_loop = {}
 interval_set = {}
@@ -295,62 +297,39 @@ async def batch_link(_, message):
 @app.on_message(filters.command("cancel"))
 async def stop_batch(_, message):
     user_id = message.chat.id
-
-    # Check if there is an active batch process for the user
     if user_id in users_loop and users_loop[user_id]:
-        users_loop[user_id] = False  # Set the loop status to False
+        users_loop[user_id] = False  
+        active_clones[user_id] = False # Cancel clone task as well
         await app.send_message(
             message.chat.id, 
-            "Batch processing has been stopped successfully. You can start a new batch now if you want."
-        )
-    elif user_id in users_loop and not users_loop[user_id]:
-        await app.send_message(
-            message.chat.id, 
-            "The batch process was already stopped. No active batch to cancel."
+            "Task has been stopped successfully."
         )
     else:
         await app.send_message(
             message.chat.id, 
-            "No active batch processing is running to cancel."
+            "No active task is running to cancel."
         )
-# -------------------------------------------------------------------------------------------
-# 🚀 SMART CLONE & FORUM SCRAPER LOGIC (MERGED)
-# -------------------------------------------------------------------------------------------
-import random
-import asyncio
-from pyrogram import raw
-from pyrogram.errors import FloodWait, MessageIdInvalid
-from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup
-from devgagan.core.mongo.db import set_clone_state, get_clone_state, remove_clone_state, get_data as get_db_data
-from devgagan.core.get_func import get_msg
 
+
+# -------------------------------------------------------------------------------------------
+# 🚀 ADVANCED FORUM CLONER (MULTI-SELECT MENU + ANTI-FLOOD)
+# -------------------------------------------------------------------------------------------
 active_clones = {}
+topic_selections = {}  # Memory store for multi-select menu
 
 async def safe_edit(msg_obj, text, **kwargs):
-    """Safely edits a message. If deleted, ignores and prevents crashes."""
+    """Safely edits progress message. Ignores if deleted to prevent log flooding."""
     if not msg_obj: return None
     try:
         await msg_obj.edit_text(text, **kwargs)
         return msg_obj
     except MessageIdInvalid:
-        return None
+        return None  
     except FloodWait as fw:
         await asyncio.sleep(fw.value + random.randint(2, 5))
         return await safe_edit(msg_obj, text, **kwargs)
     except Exception:
         return msg_obj
-
-async def initialize_userbot(user_id):
-    data = await get_db_data(user_id)
-    if data and data.get("session"):
-        try:
-            from pyrogram import Client
-            userbot = Client("userbot_clone", api_id=app.api_id, api_hash=app.api_hash, session_string=data.get("session"))
-            await userbot.start()
-            return userbot
-        except Exception:
-            await app.send_message(user_id, "❌ Login Expired! Kripya fir se /login karein.")
-    return None
 
 def parse_tg_link(link: str) -> tuple:
     link = link.split("?")[0].rstrip("/")
@@ -361,16 +340,72 @@ def parse_tg_link(link: str) -> tuple:
         elif "t.me/" in link:
             return parts[3], int(parts[-1])
     except Exception: pass
-    raise ValueError("Invalid Telegram link format")
+    raise ValueError("Invalid format")
 
 def generate_msg_link(chat_id, chat_username, msg_id):
     return f"https://t.me/{chat_username}/{msg_id}" if chat_username else f"https://t.me/c/{str(chat_id).replace('-100', '')}/{msg_id}"
 
+# ----------------- UI: MULTI-SELECT MENU GENERATOR -----------------
+async def send_topic_menu(user_id, message_obj):
+    data = topic_selections.get(user_id)
+    if not data: return
+    
+    buttons = []
+    # Topic buttons toggle
+    for t_id, t_title in data["topics"].items():
+        status = "✅" if t_id in data["selected"] else "❌"
+        buttons.append([InlineKeyboardButton(f"{status} {t_title[:25]}", callback_data=f"tsel_{t_id}")])
+        
+    # Action buttons
+    buttons.append([
+        InlineKeyboardButton("☑️ Select All", callback_data="tsel_all"),
+        InlineKeyboardButton("🔳 Deselect All", callback_data="tsel_none")
+    ])
+    buttons.append([InlineKeyboardButton("▶️ Start Cloning", callback_data="tsel_start")])
+    buttons.append([InlineKeyboardButton("✖️ Cancel", callback_data="cancel_clone_task")])
+    
+    await safe_edit(message_obj, f"📋 **Forum Group:** `{data['chat_title']}`\n\nKripya topics select karein jinka backup lena hai:", reply_markup=InlineKeyboardMarkup(buttons))
+
+@app.on_callback_query(filters.regex(r"^tsel_"))
+async def topic_selection_handler(_, query):
+    user_id = query.from_user.id
+    action = query.data.replace("tsel_", "")
+    
+    if user_id not in topic_selections:
+        return await query.answer("❌ Session expired. Please run /clone again.", show_alert=True)
+        
+    data = topic_selections[user_id]
+    
+    if action == "all":
+        data["selected"] = list(data["topics"].keys())
+    elif action == "none":
+        data["selected"] = []
+    elif action == "start":
+        if not data["selected"]:
+            return await query.answer("⚠️ Kripya kam se kam ek topic select karein!", show_alert=True)
+        
+        await query.message.edit_text("⏳ **Targets locked. Cloning shuru ho rahi hai...**")
+        userbot = await initialize_userbot(user_id)
+        active_clones[user_id] = True
+        
+        asyncio.create_task(run_forum_clone(user_id, userbot, data["chat_id"], data["username"], data["chat_title"], data["selected"], query.message, fresh_start_id=data["start_msg_id"]))
+        del topic_selections[user_id]
+        return
+    else:
+        t_id = int(action)
+        if t_id in data["selected"]:
+            data["selected"].remove(t_id)
+        else:
+            data["selected"].append(t_id)
+            
+    await send_topic_menu(user_id, query.message)
+
+# ----------------- MAIN CLONE COMMAND -----------------
 @app.on_message(filters.command("clone") & filters.private)
 async def clone_command_handler(_, message):
     user_id = message.chat.id
-    if active_clones.get(user_id, False):
-        return await message.reply("⚠️ Aapka ek clone task pehle se chal raha hai. Kripya wait karein.")
+    if active_clones.get(user_id, False) or users_loop.get(user_id, False):
+        return await message.reply("⚠️ Aapka ek clone/batch task pehle se chal raha hai.")
 
     saved_state = await get_clone_state(user_id)
     if saved_state:
@@ -381,19 +416,16 @@ async def clone_command_handler(_, message):
         ])
         return await message.reply(f"⚠️ **Interrupted Task Mila!**\nSource: `{saved_state.get('chat_title')}`\nResume karna hai?", reply_markup=buttons)
 
-    if len(message.command) < 2:
-        return await message.reply("📝 **Usage:** `/clone <message_link>`")
+    if len(message.command) < 2: return await message.reply("📝 **Usage:** `/clone <message_link>`")
 
     url = message.command[1]
     status_msg = await message.reply("🔍 **Verify ho raha hai...**")
     
-    try:
-        chat_peer, start_msg_id = parse_tg_link(url)
-    except Exception:
-        return await status_msg.edit_text("❌ Galat link format!")
+    try: chat_peer, start_msg_id = parse_tg_link(url)
+    except: return await status_msg.edit_text("❌ Galat link format!")
 
     userbot = await initialize_userbot(user_id)
-    if not userbot: return await status_msg.edit_text("❌ Pehle bot me /login karein.")
+    if not userbot: return await status_msg.edit_text("❌ Pehle /login karein.")
 
     try:
         source_chat = await userbot.get_chat(chat_peer)
@@ -401,15 +433,16 @@ async def clone_command_handler(_, message):
         chat_username = getattr(source_chat, "username", None)
         
         if getattr(source_chat, "is_forum", False):
-            await status_msg.edit_text("👾 **Forum Group detected! Fetching topics...**")
+            await status_msg.edit_text("👾 **Forum Topics fetch ho rahe hain...**")
             peer = await userbot.resolve_peer(chat_id)
             input_channel = raw.types.InputChannel(channel_id=peer.channel_id, access_hash=peer.access_hash)
             result = await userbot.invoke(raw.functions.channels.GetForumTopics(channel=input_channel, offset_date=0, offset_id=0, offset_topic=0, limit=50))
             
-            buttons = [[InlineKeyboardButton(f"📁 {t.title[:20]}", callback_data=f"clone_topic_{chat_id}_{t.id}_{start_msg_id}")] for t in result.topics]
-            buttons.append([InlineKeyboardButton("🌟 Clone ALL", callback_data=f"clone_all_topics_{chat_id}_{start_msg_id}")])
-            await set_clone_state(user_id, {"chat_title": chat_title, "chat_id": chat_id, "username": chat_username, "type": "forum"})
-            await status_msg.edit_text(f"📋 **Group:** {chat_title}\nSelect topic:", reply_markup=InlineKeyboardMarkup(buttons))
+            topic_selections[user_id] = {
+                "chat_id": chat_id, "chat_title": chat_title, "username": chat_username, 
+                "start_msg_id": start_msg_id, "topics": {t.id: t.title for t in result.topics}, "selected": []
+            }
+            await send_topic_menu(user_id, status_msg)
             await userbot.stop()
         else:
             await status_msg.edit_text("📢 **Normal Chat detected! Scanning...**")
@@ -417,7 +450,6 @@ async def clone_command_handler(_, message):
             async for last_msg in userbot.get_chat_history(chat_id, limit=1):
                 end_id = last_msg.id
                 break
-            await status_msg.delete()
             active_clones[user_id] = True
             asyncio.create_task(run_standard_clone(user_id, userbot, chat_id, chat_username, chat_title, start_msg_id, end_id, message))
     except Exception as e:
@@ -425,13 +457,14 @@ async def clone_command_handler(_, message):
         try: await userbot.stop()
         except: pass
 
-@app.on_callback_query(filters.regex(r"^clone_topic_|^clone_all_topics_|^resume_clone|^clear_and_new_clone|^cancel_clone_task"))
-async def handle_clone_callbacks(_, query):
+@app.on_callback_query(filters.regex(r"^resume_clone|^clear_and_new_clone|^cancel_clone_task"))
+async def handle_misc_callbacks(_, query):
     user_id, data = query.from_user.id, query.data
     if data == "cancel_clone_task":
         active_clones[user_id] = False
+        if user_id in topic_selections: del topic_selections[user_id]
         await remove_clone_state(user_id)
-        return await query.message.delete()
+        return await query.message.edit_text("❌ Task Cancelled.")
     if data == "clear_and_new_clone":
         await remove_clone_state(user_id)
         return await query.message.edit_text("✅ State cleared. Use /clone again.")
@@ -448,23 +481,7 @@ async def handle_clone_callbacks(_, query):
             asyncio.create_task(run_standard_clone(user_id, userbot, state["chat_id"], state.get("username"), state["chat_title"], state["last_id"], state["end_id"], query.message))
         return
 
-    params = data.split("_")
-    if data.startswith("clone_topic_"):
-        chat_id, topic_id, start_id = int(params[2]), int(params[3]), int(params[4])
-        state = await get_clone_state(user_id)
-        await query.message.delete()
-        asyncio.create_task(run_forum_clone(user_id, userbot, chat_id, state.get("username") if state else None, "Forum Topic", [topic_id], query.message, fresh_start_id=start_id))
-
-    elif data.startswith("clone_all_topics_"):
-        chat_id, start_id = int(params[3]), int(params[4])
-        state = await get_clone_state(user_id)
-        await query.message.delete()
-        peer = await userbot.resolve_peer(chat_id)
-        input_channel = raw.types.InputChannel(channel_id=peer.channel_id, access_hash=peer.access_hash)
-        result = await userbot.invoke(raw.functions.channels.GetForumTopics(channel=input_channel, offset_date=0, offset_id=0, offset_topic=0, limit=100))
-        topic_ids = [t.id for t in result.topics]
-        asyncio.create_task(run_forum_clone(user_id, userbot, chat_id, state.get("username") if state else None, "All Topics Backup", topic_ids, query.message, fresh_start_id=start_id))
-
+# ----------------- ENGINES -----------------
 async def run_standard_clone(user_id, userbot, chat_id, chat_username, chat_title, start_id, end_id, message_obj):
     try:
         pin_log = await app.send_message(user_id, f"📌 **Task Started**\nChat: `{chat_title}`")
@@ -477,11 +494,12 @@ async def run_standard_clone(user_id, userbot, chat_id, chat_username, chat_titl
                 for msg in await userbot.get_messages(chat_id, list(range(current, limit_end))):
                     if not active_clones.get(user_id, False): return
                     if not msg or msg.empty or not getattr(msg, 'media', None): continue
-                    await get_msg(userbot, user_id, pin_log.id if pin_log else 0, generate_msg_link(chat_id, chat_username, msg.id), 0, message_obj)
+                    # PASSED 0 HERE TO PREVENT GET_MSG FROM EDITING AND CRASHING
+                    await get_msg(userbot, user_id, 0, generate_msg_link(chat_id, chat_username, msg.id), 0, message_obj)
                     count += 1
-                    await asyncio.sleep(random.uniform(1.5, 3.2)) # Stealth Micro-delay
+                    await asyncio.sleep(random.uniform(1.5, 3.2))
                 pin_log = await safe_edit(pin_log, f"🚀 **Progress:** `{count}` files done.")
-                await asyncio.sleep(random.randint(6, 12)) # Stealth Chunk delay
+                await asyncio.sleep(random.randint(6, 12))
             except FloodWait as fw:
                 await asyncio.sleep(fw.value + random.randint(5, 10))
             except Exception: pass
@@ -494,7 +512,7 @@ async def run_standard_clone(user_id, userbot, chat_id, chat_username, chat_titl
 
 async def run_forum_clone(user_id, userbot, chat_id, chat_username, chat_title, topic_ids, message_obj, fresh_start_id=1, resume_id=None):
     try:
-        pin_log = await app.send_message(user_id, f"📌 **Forum Clone Started**\nTopics: `{len(topic_ids)}`")
+        pin_log = await app.send_message(user_id, f"📌 **Forum Clone Started**\nTopics selected: `{len(topic_ids)}`")
         total_cloned, summary_records = 0, []
         for idx, t_id in enumerate(topic_ids, 1):
             if not active_clones.get(user_id, False): return
@@ -504,7 +522,7 @@ async def run_forum_clone(user_id, userbot, chat_id, chat_username, chat_title, 
                 max_id = thread_msg.id
                 break
             
-            target_chat_data = await get_db_data(user_id)
+            target_chat_data = await db.get_data(user_id)
             if target_chat_data and target_chat_data.get("chat_id"):
                 try: await app.send_message(target_chat_data["chat_id"], f"━━━━━━━━━━━━━━━━━━━━━\n📁 **TOPIC: {t_id}**\n━━━━━━━━━━━━━━━━━━━━━")
                 except: pass
@@ -515,24 +533,24 @@ async def run_forum_clone(user_id, userbot, chat_id, chat_username, chat_title, 
                 await set_clone_state(user_id, {"chat_id": chat_id, "username": chat_username, "chat_title": chat_title, "topic_ids": topic_ids, "last_id": curr_id, "type": "forum"})
                 try:
                     for msg in await userbot.get_messages(chat_id, list(range(curr_id, min(curr_id + CHUNK, max_id + 1)))):
-                        if not msg or msg.empty or msg.message_thread_id != t_id or (not msg.media and not msg.text): continue
-                        await get_msg(userbot, user_id, pin_log.id if pin_log else 0, generate_msg_link(chat_id, chat_username, msg.id), 0, message_obj)
+                        if not msg or msg.empty or getattr(msg, 'message_thread_id', None) != t_id or (not msg.media and not msg.text): continue
+                        # PASSED 0 HERE TO PREVENT GET_MSG CRASH
+                        await get_msg(userbot, user_id, 0, generate_msg_link(chat_id, chat_username, msg.id), 0, message_obj)
                         topic_count += 1
                         total_cloned += 1
-                        await asyncio.sleep(random.uniform(1.5, 3.2)) # Stealth Micro-delay
-                    pin_log = await safe_edit(pin_log, f"📁 **Topic [{idx}/{len(topic_ids)}]**\nThread: `{t_id}`\nItems: `{topic_count}`\nTotal: `{total_cloned}`")
-                    await asyncio.sleep(random.randint(6, 12)) # Stealth Chunk delay
+                        await asyncio.sleep(random.uniform(1.5, 3.2))
+                    pin_log = await safe_edit(pin_log, f"📁 **Topic [{idx}/{len(topic_ids)}]**\nThread ID: `{t_id}`\nItems done: `{topic_count}`\nTotal: `{total_cloned}`")
+                    await asyncio.sleep(random.randint(6, 12))
                 except FloodWait as fw:
                     await asyncio.sleep(fw.value + random.randint(5, 10))
                 except Exception: pass
             summary_records.append({"topic_id": t_id, "count": topic_count})
             resume_id = None
 
-        final_text = "✅ **Topics Cloned!**\n" + "".join([f"• Thread `{r['topic_id']}` ➔ `{r['count']}` files\n" for r in summary_records])
-        await safe_edit(pin_log, final_text + f"🔥 **Grand Total:** `{total_cloned}`")
+        final_text = "✅ **Selected Topics Cloned!**\n" + "".join([f"• Thread `{r['topic_id']}` ➔ `{r['count']}` files\n" for r in summary_records])
+        await safe_edit(pin_log, final_text + f"\n🔥 **Grand Total:** `{total_cloned}`")
         await remove_clone_state(user_id)
     finally:
         active_clones[user_id] = False
         try: await userbot.stop()
         except: pass
-    
